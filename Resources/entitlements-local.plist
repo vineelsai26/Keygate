@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    Entitlements for the self-signed "Keygate Local Signing" identity. The
+    restricted iCloud/CloudKit entitlements in entitlements.plist can only be
+    carried by an Apple-issued certificate; embedding them under a self-signed
+    cert makes the system refuse to launch the app (RBS launch error 163).
+    CloudKit already degrades to local-only without them, so they are omitted
+    here while keeping the same non-iCloud hardening.
+  -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <false/>
+  <key>com.apple.security.network.client</key>
+  <true/>
+</dict>
+</plist>
