@@ -1,6 +1,7 @@
 import AppKit
 import KeygateCore
 import SwiftUI
+import VKit
 
 /// Off-screen renderer for verification: renders `ContentView` to a PNG
 /// without opening a window. Invoked via
@@ -31,7 +32,7 @@ enum RenderHarness {
             .environmentObject(controller)
             .frame(width: 760)
             .fixedSize(horizontal: false, vertical: true)
-            .background(Color(nsColor: .windowBackgroundColor))
+            .background(Palette.background)
 
         let renderer = ImageRenderer(content: view)
         renderer.scale = 2

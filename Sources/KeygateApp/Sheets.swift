@@ -20,7 +20,7 @@ struct ImportSheet: View {
             TextEditor(text: $keyText)
                 .font(.system(.caption, design: .monospaced))
                 .frame(minHeight: 170)
-                .overlay(RoundedRectangle(cornerRadius: Theme.insetRadius).stroke(isDropTargeted ? AnyShapeStyle(.tint) : AnyShapeStyle(.quaternary), lineWidth: isDropTargeted ? 2 : 1))
+                .overlay(RoundedRectangle(cornerRadius: Theme.insetRadius).stroke(isDropTargeted ? AnyShapeStyle(.tint) : AnyShapeStyle(Palette.border.opacity(0.6)), lineWidth: isDropTargeted ? 2 : 1))
             SecureField("Passphrase (if encrypted)", text: $passphrase)
                 .textFieldStyle(.roundedBorder)
         } actions: {

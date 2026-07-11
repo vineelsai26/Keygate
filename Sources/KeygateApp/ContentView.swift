@@ -76,6 +76,8 @@ struct ContentView: View {
             }
         }
         .padding([.top, .horizontal], Theme.pagePadding)
+        .background(Palette.background)
+        .tint(Palette.accent)
         .onAppear {
             controller.refresh()
             controller.checkCloudStatus()
@@ -157,6 +159,10 @@ struct ContentView: View {
             .buttonStyle(.borderedProminent)
         }
         .padding(12)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: Theme.cardRadius))
+        .background(Palette.surface.opacity(0.06), in: RoundedRectangle(cornerRadius: Theme.cardRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.cardRadius)
+                .strokeBorder(Palette.border.opacity(0.6), lineWidth: 1)
+        )
     }
 }

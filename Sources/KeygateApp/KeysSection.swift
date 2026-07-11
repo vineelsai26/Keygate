@@ -32,7 +32,7 @@ struct KeysSection: View {
                         }
                         Spacer()
                         if key.isSynced {
-                            Image(systemName: "icloud.fill").foregroundStyle(.blue)
+                            Image(systemName: "icloud.fill").foregroundStyle(Palette.accentSecondary)
                         }
                         keyActions(for: key)
                     }
