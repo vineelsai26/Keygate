@@ -39,7 +39,9 @@ Touch ID-gated export path exists for moving a key elsewhere.
   entitlements fall back to local-only operation.
 
 Process identity includes team ID, signing identifier, and code hash when
-macOS can validate the requesting executable's signature.
+macOS can validate the requesting executable's signature. CLI requests spawned
+by nested app helpers are attributed to the outer owning application, so a rule
+for Visual Studio Code also covers SSH launched by Code Helper.
 
 ### Third-party code
 

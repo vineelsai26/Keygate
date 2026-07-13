@@ -691,6 +691,32 @@ func testProcessDisplayName() throws {
                "empty process should be unknown app")
 }
 
+func testNestedApplicationAttribution() throws {
+    let helper = "/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper.app/Contents/MacOS/Code Helper"
+    let bundles = ProcessResolver.enclosingApplicationBundlePaths(forExecutablePath: helper)
+    try expect(bundles == [
+        "/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper.app",
+        "/Applications/Visual Studio Code.app",
+    ], "nested helpers must retain the outer owning application")
+
+    let vscodeRule = PolicyRule(
+        name: "Allow VS Code",
+        appBundleIdentifier: "com.microsoft.VSCode",
+        action: .alwaysAllow
+    )
+    let helperContext = PolicyContext(
+        process: ProcessIdentity(
+            executablePath: "/usr/bin/ssh",
+            terminalBundleIdentifier: "com.microsoft.VSCode"
+        ),
+        destination: DestinationIdentity(),
+        keyFingerprint: "SHA256:vscode",
+        requestFlags: 0
+    )
+    try expect(PolicyEngine(rules: [vscodeRule]).decide(helperContext).action == .alwaysAllow,
+               "a nested VS Code helper must be attributed to the outer VS Code rule")
+}
+
 /// A client that disconnects before reading the response must not kill the agent
 /// process via SIGPIPE (the historical crash when ssh/git hung up mid-exchange).
 func testAgentSurvivesClientDisconnect() throws {
@@ -945,6 +971,7 @@ let tests: [(String, () throws -> Void)] = [
     ("environment passphrase unlocks agent", testEnvironmentPassphraseUnlocksAgent),
     ("concurrent audit log and private permissions", testConcurrentAuditLogAndPrivatePermissions),
     ("process display name", testProcessDisplayName),
+    ("nested application attribution", testNestedApplicationAttribution),
     ("agent survives client disconnect", testAgentSurvivesClientDisconnect),
     ("key management operations", testKeyManagementOperations),
     ("setup installer", testSetupInstaller),

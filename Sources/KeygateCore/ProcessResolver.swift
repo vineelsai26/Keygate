@@ -154,14 +154,28 @@ public enum ProcessResolver {
         return pid_t(info.pbi_ppid)
     }
 
-    private static func bundleIdentifier(forExecutablePath path: String?) -> String? {
-        guard let path else { return nil }
+    /// Application bundles enclosing an executable, ordered from the nearest
+    /// nested helper to the outermost owning application.
+    public static func enclosingApplicationBundlePaths(forExecutablePath path: String?) -> [String] {
+        guard let path else { return [] }
+        var result: [String] = []
         var url = URL(fileURLWithPath: path)
         while url.path != "/" {
             if url.pathExtension == "app" {
-                return Bundle(url: url)?.bundleIdentifier
+                result.append(url.path)
             }
             url.deleteLastPathComponent()
+        }
+        return result
+    }
+
+    private static func bundleIdentifier(forExecutablePath path: String?, preferOutermost: Bool = false) -> String? {
+        let paths = enclosingApplicationBundlePaths(forExecutablePath: path)
+        let candidates = preferOutermost ? Array(paths.reversed()) : paths
+        for candidate in candidates {
+            if let identifier = Bundle(url: URL(fileURLWithPath: candidate))?.bundleIdentifier {
+                return identifier
+            }
         }
         return nil
     }
@@ -174,7 +188,7 @@ public enum ProcessResolver {
         while let p = current, hops < 10 {
             if p <= 1 { return nil }
             if let path = executablePath(pid: p),
-               let bundle = bundleIdentifier(forExecutablePath: path) {
+               let bundle = bundleIdentifier(forExecutablePath: path, preferOutermost: true) {
                 return bundle
             }
             current = parentPID(pid: p)
