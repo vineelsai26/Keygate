@@ -19,7 +19,8 @@ let package = Package(
     targets: [
         .target(
             name: "CBcryptPBKDF",
-            path: "Sources/CBcryptPBKDF"
+            path: "Sources/CBcryptPBKDF",
+            exclude: ["Package.swift"]
         ),
         .target(
             name: "KeygateCore",
