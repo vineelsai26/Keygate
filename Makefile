@@ -30,6 +30,7 @@ bundle: build
 	@rm -rf "$(APP)"
 	@mkdir -p "$(MACOS)" "$(RESOURCES)"
 	@cp "$(BUILD_DIR)/$(EXEC)" "$(MACOS)/$(EXEC)"
+	@cp "$(BUILD_DIR)/$(CLI)" "$(MACOS)/$(CLI)"
 	@cp Resources/Info.plist "$(CONTENTS)/Info.plist"
 	@if [ -f Resources/AppIcon.icns ]; then cp Resources/AppIcon.icns "$(RESOURCES)/AppIcon.icns"; fi
 	@printf 'APPL????' > "$(CONTENTS)/PkgInfo"
@@ -38,9 +39,11 @@ bundle: build
 sign:
 	@if security find-identity -p codesigning 2>/dev/null | grep -qF "$(SIGN_IDENTITY)"; then \
 		echo "Signing with '$(SIGN_IDENTITY)' (local entitlements, no iCloud)"; \
+		codesign --force --sign "$(SIGN_IDENTITY)" --timestamp=none "$(MACOS)/$(CLI)"; \
 		codesign --force --sign "$(SIGN_IDENTITY)" --entitlements Resources/entitlements-local.plist --timestamp=none "$(APP)"; \
 	else \
 		echo "No '$(SIGN_IDENTITY)' identity — signing ad-hoc without CloudKit entitlements."; \
+		codesign --force --sign - --timestamp=none "$(MACOS)/$(CLI)"; \
 		codesign --force --sign - --timestamp=none "$(APP)"; \
 	fi
 	@codesign --verify --verbose "$(APP)" && echo "Signed: $(APP)"
