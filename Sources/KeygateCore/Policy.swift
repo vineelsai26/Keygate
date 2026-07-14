@@ -18,6 +18,7 @@ public struct ProcessIdentity: Codable, Equatable {
     public var codeHash: String?
     public var parentPID: Int32?
     public var terminalBundleIdentifier: String?
+	public var terminalTeamIdentifier: String?
 
     public init(
         pid: Int32? = nil,
@@ -28,7 +29,8 @@ public struct ProcessIdentity: Codable, Equatable {
         signingIdentifier: String? = nil,
         codeHash: String? = nil,
         parentPID: Int32? = nil,
-        terminalBundleIdentifier: String? = nil
+		terminalBundleIdentifier: String? = nil,
+		terminalTeamIdentifier: String? = nil
     ) {
         self.pid = pid
         self.uid = uid
@@ -39,6 +41,7 @@ public struct ProcessIdentity: Codable, Equatable {
         self.codeHash = codeHash
         self.parentPID = parentPID
         self.terminalBundleIdentifier = terminalBundleIdentifier
+		self.terminalTeamIdentifier = terminalTeamIdentifier
     }
 }
 
@@ -165,14 +168,20 @@ public struct PolicyEngine {
         // Socket peers are often CLI tools (`ssh`, `git`). Match the rule's app
         // against either the peer's own bundle or the parent terminal/GUI app.
         if let bundle = rule.appBundleIdentifier {
-            let processBundles = [
-                context.process.bundleIdentifier,
-                context.process.terminalBundleIdentifier,
-            ].compactMap { $0 }
-            if !processBundles.contains(bundle) { return false }
+			// Bundle IDs come from Info.plist and are spoofable. Bundle-scoped
+			// rules therefore require a team constraint bound to the same signed
+			// process (the direct peer or its owning terminal application).
+			guard let requiredTeam = rule.teamIdentifier else { return false }
+			let directMatch = context.process.bundleIdentifier == bundle
+				&& context.process.teamIdentifier == requiredTeam
+			let terminalMatch = context.process.terminalBundleIdentifier == bundle
+				&& context.process.terminalTeamIdentifier == requiredTeam
+			if !directMatch && !terminalMatch { return false }
         }
         if let path = rule.executablePath, path != context.process.executablePath { return false }
-        if let team = rule.teamIdentifier, team != context.process.teamIdentifier { return false }
+		if rule.appBundleIdentifier == nil,
+		   let team = rule.teamIdentifier,
+		   team != context.process.teamIdentifier { return false }
         // Destination host/user are only available when the agent protocol
         // provides them; unset destination fields never match a host-restricted rule.
         if let host = rule.destinationHost, host != context.destination.host { return false }

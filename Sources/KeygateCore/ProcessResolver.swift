@@ -34,6 +34,7 @@ public enum ProcessResolver {
             let path = executablePath(pid: pid)
             let parent = parentPID(pid: pid)
             let signing = codeSigningIdentity(forExecutablePath: path)
+			let terminal = terminalAppIdentity(startingFrom: parent)
             return ProcessIdentity(
                 pid: pid,
                 uid: uidStatus == 0 ? uid : nil,
@@ -44,7 +45,8 @@ public enum ProcessResolver {
                 codeHash: signing.codeHash,
                 parentPID: parent,
                 // Socket peers are often CLI tools (ssh, git); walk parents for the GUI app.
-                terminalBundleIdentifier: terminalAppBundleIdentifier(startingFrom: parent)
+				terminalBundleIdentifier: terminal?.bundleIdentifier,
+				terminalTeamIdentifier: terminal?.teamIdentifier
             )
         }
 
@@ -117,6 +119,27 @@ public enum ProcessResolver {
         return name
     }
 
+	/// Returns a bundle identity only when its executable has a valid signature
+	/// with a team identifier suitable for binding a policy rule.
+	public static func validatedApplicationIdentity(at url: URL) -> ProcessIdentity? {
+		#if os(macOS)
+		guard let bundle = Bundle(url: url),
+		      let bundleIdentifier = bundle.bundleIdentifier,
+		      let executablePath = bundle.executableURL?.path else { return nil }
+		let signing = codeSigningIdentity(forExecutablePath: executablePath)
+		guard let teamIdentifier = signing.teamIdentifier else { return nil }
+		return ProcessIdentity(
+			executablePath: executablePath,
+			bundleIdentifier: bundleIdentifier,
+			teamIdentifier: teamIdentifier,
+			signingIdentifier: signing.signingIdentifier,
+			codeHash: signing.codeHash
+		)
+		#else
+		return nil
+		#endif
+	}
+
     #if os(macOS)
     private static func codeSigningIdentity(forExecutablePath path: String?) -> (teamIdentifier: String?, signingIdentifier: String?, codeHash: String?) {
         guard let path else { return (nil, nil, nil) }
@@ -181,15 +204,16 @@ public enum ProcessResolver {
     }
 
     /// Walk the parent chain looking for a process that lives inside an `.app` bundle.
-    private static func terminalAppBundleIdentifier(startingFrom pid: pid_t?) -> String? {
+	private static func terminalAppIdentity(startingFrom pid: pid_t?) -> (bundleIdentifier: String, teamIdentifier: String)? {
         var current = pid
         var hops = 0
         // Cap depth so a broken parent chain cannot loop forever.
         while let p = current, hops < 10 {
             if p <= 1 { return nil }
             if let path = executablePath(pid: p),
-               let bundle = bundleIdentifier(forExecutablePath: path, preferOutermost: true) {
-                return bundle
+			   let bundle = bundleIdentifier(forExecutablePath: path, preferOutermost: true),
+			   let team = codeSigningIdentity(forExecutablePath: path).teamIdentifier {
+				return (bundle, team)
             }
             current = parentPID(pid: p)
             hops += 1

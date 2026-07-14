@@ -2,16 +2,17 @@ import CryptoKit
 import Foundation
 import Security
 
-/// File-backed key vault. Private material lives in individual `0600` files under
-/// `KeygatePaths.keysDirectory` rather than the macOS Keychain.
+/// File-backed key vault. Passphrase-encrypted private material lives in
+/// individual `0600` files under `KeygatePaths.keysDirectory`.
 ///
 /// Storing in the Keychain ties each item to the creating binary's code
 /// signature, so a locally/self-signed app that is rebuilt often keeps being
 /// treated as "a different app" and re-prompts for the login password on every
 /// use. Files avoid that entirely while keeping the same on-disk protection
 /// model OpenSSH uses for its own `~/.ssh` private keys (owner-only file
-/// permissions). Signing and export remain gated by Touch ID through the
-/// app-level `SigningAuthorizer`.
+/// permissions). New private material is never written until vault encryption
+/// is configured; legacy plaintext files can only be read during migration.
+/// Signing and export remain gated by Touch ID through the app-level authorizer.
 public final class FileVault: KeyVault, @unchecked Sendable {
     /// Prefixes newly-encrypted files so their protection can be identified from
     /// the file itself. This keeps interrupted metadata updates recoverable.
@@ -112,7 +113,7 @@ public final class FileVault: KeyVault, @unchecked Sendable {
 
     private func reencryptAllKeys() throws {
         for record in try loadMetadata() where record.encryption != .passphrase {
-            let material = try readPrivateKey(record: record)
+			let material = try readPrivateKey(record: record, allowPlaintextMigration: true)
             let encryption = try writePrivateKey(material, account: record.keychainAccount)
             try updateEncryption(fingerprint: record.fingerprint, to: encryption)
         }
@@ -136,6 +137,7 @@ public final class FileVault: KeyVault, @unchecked Sendable {
 
     public func generate(_ type: SSHKeyType, comment: String, syncToCloud: Bool, rsaBits: Int) throws -> StoredKeyRecord {
         operationLock.lock(); defer { operationLock.unlock() }
+		try requireUnlockedEncryption()
         let generated = try SSHSigner.generate(type, rsaBits: rsaBits)
         return try store(
             keyType: type,
@@ -148,6 +150,7 @@ public final class FileVault: KeyVault, @unchecked Sendable {
 
     public func importPrivateKey(text: String, passphrase: String?, comment: String?, syncToCloud: Bool) throws -> StoredKeyRecord {
         operationLock.lock(); defer { operationLock.unlock() }
+		try requireUnlockedEncryption()
         let imported = try KeyImporter.parse(text: text, passphrase: passphrase)
         let publicBlob = try SSHSigner.publicBlob(type: imported.keyType, privateMaterial: imported.privateMaterial)
         let resolvedComment = (comment?.isEmpty == false ? comment : nil) ?? imported.comment ?? ""
@@ -284,16 +287,9 @@ public final class FileVault: KeyVault, @unchecked Sendable {
     /// applied so the caller can record it (reads need to know whether to unwrap).
     @discardableResult
     private func writePrivateKey(_ data: Data, account: String) throws -> KeyEncryption? {
-        let bytes: Data
-        let encryption: KeyEncryption?
-        if encryptionEnabled() {
-            guard let key = currentKey() else { throw KeygateError.vaultLocked }
-            bytes = Self.encryptedFileMagic + (try PassphraseCipher.encrypt(data, key: key))
-            encryption = .passphrase
-        } else {
-            bytes = data
-            encryption = nil
-        }
+		try requireUnlockedEncryption()
+		guard let key = currentKey() else { throw KeygateError.vaultLocked }
+		let bytes = Self.encryptedFileMagic + (try PassphraseCipher.encrypt(data, key: key))
         try FileManager.default.createDirectory(
             at: keysDirectory,
             withIntermediateDirectories: true,
@@ -302,10 +298,10 @@ public final class FileVault: KeyVault, @unchecked Sendable {
         let url = materialURL(account: account)
         try bytes.write(to: url, options: [.atomic])
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-        return encryption
+		return .passphrase
     }
 
-    private func readPrivateKey(record: StoredKeyRecord) throws -> Data {
+	private func readPrivateKey(record: StoredKeyRecord, allowPlaintextMigration: Bool = false) throws -> Data {
         let url = materialURL(account: record.keychainAccount)
         if let stored = try? Data(contentsOf: url) {
             if stored.starts(with: Self.encryptedFileMagic) {
@@ -317,14 +313,18 @@ public final class FileVault: KeyVault, @unchecked Sendable {
                 guard let key = currentKey() else { throw KeygateError.vaultLocked }
                 return try PassphraseCipher.decrypt(stored, key: key)
             case nil:
-                return stored
+				guard allowPlaintextMigration, encryptionEnabled(), currentKey() != nil else {
+					throw KeygateError.encryptionRequired
+				}
+				return stored
             }
         }
         // One-time migration: pull material from a legacy Keychain item (created
         // by an older build), persist it to a file (encrypted when possible),
         // then remove the Keychain copy. This is the last time the Keychain can
         // prompt for a given key.
-        guard let legacy = LegacyKeychainStore.read(account: record.keychainAccount) else {
+		try requireUnlockedEncryption()
+		guard let legacy = LegacyKeychainStore.read(account: record.keychainAccount) else {
             throw KeygateError.keyNotFound
         }
         let encryption = try writePrivateKey(legacy, account: record.keychainAccount)
@@ -369,6 +369,11 @@ public final class FileVault: KeyVault, @unchecked Sendable {
         )
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
     }
+
+	private func requireUnlockedEncryption() throws {
+		guard encryptionEnabled() else { throw KeygateError.encryptionRequired }
+		guard currentKey() != nil else { throw KeygateError.vaultLocked }
+	}
 }
 
 public final class InMemoryVault: KeyVault {

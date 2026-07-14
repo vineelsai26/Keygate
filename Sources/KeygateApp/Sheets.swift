@@ -397,8 +397,13 @@ struct RuleEditorSheet: View {
         panel.allowedContentTypes = [.applicationBundle]
         panel.directoryURL = URL(fileURLWithPath: "/Applications")
         panel.message = "Choose the app this rule applies to"
-        guard panel.runModal() == .OK, let url = panel.url, let bundle = Bundle(url: url) else { return }
-        bundleIdentifier = bundle.bundleIdentifier ?? bundleIdentifier
+		guard panel.runModal() == .OK,
+		      let url = panel.url,
+		      let identity = ProcessResolver.validatedApplicationIdentity(at: url),
+		      let validatedBundle = identity.bundleIdentifier,
+		      let validatedTeam = identity.teamIdentifier else { return }
+		bundleIdentifier = validatedBundle
+		teamIdentifier = validatedTeam
         if name.trimmingCharacters(in: .whitespaces).isEmpty {
             let appName = url.deletingPathExtension().lastPathComponent
             name = "Rule for \(appName)"

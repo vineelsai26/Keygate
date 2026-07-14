@@ -21,10 +21,11 @@ Touch ID-gated export path exists for moving a key elsewhere.
   clipboard or `0600` file.
 - Key management: rename, delete, per-key iCloud sync toggle, and
   `authorized_keys` export.
-- Private key storage in owner-only (`0600`) files under
+- Passphrase-encrypted private key storage in owner-only (`0600`) files under
   `~/Library/Application Support/Keygate/keys`, gated for use by an in-app Touch
-  ID/password prompt. Keys created by older builds are migrated out of the
-  Keychain automatically on first use.
+  ID/password prompt. Vault encryption must be configured before generating or
+  importing keys; legacy plaintext files are accepted only by the encryption
+  migration and are never usable directly.
 - RFC 9987 identity and sign-request handling.
 - Policy engine for signed app, key, allow, deny, ask, and Touch ID/password
   rules.
@@ -128,8 +129,8 @@ keygate diagnose
   Keychain items bind to the creating binary's code signature, so a
   locally/self-signed build that is rebuilt often is treated as a new app and
   re-prompts for the login password on every use.
-- Optional passphrase encryption at rest: enabling it (app "Encrypt Keys…" or
-  `keygate encrypt`) seals each key file with AES-256-GCM under a key derived
+- Mandatory passphrase encryption at rest: enable it (app "Set Vault Passphrase…" or
+  `keygate encrypt`) before creating or importing keys. It seals each key file with AES-256-GCM under a key derived
   from your passphrase via PBKDF2-HMAC-SHA256 (600k iterations). The passphrase
   and derived key never touch disk or the Keychain; the key is cached in memory
   for the session. Unlock once per app launch (`KEYGATE_PASSPHRASE` for scripts).
@@ -142,9 +143,8 @@ keygate diagnose
   self-signed builds and does not depend on code-signing stability.
 - Private key export prompts for Touch ID/password before revealing key material
   and never leaves through the agent socket.
-- Trade-off: without passphrase encryption enabled, at-rest protection is
-  filesystem permissions only (like plain `~/.ssh` keys). Enabling passphrase
-  encryption adds AES-256-GCM at rest at the cost of an unlock per session.
+- Legacy plaintext key files are fail-closed until `keygate encrypt` migrates
+  them. AES-256-GCM at-rest protection costs one unlock per session.
 
 ## Project Layout
 

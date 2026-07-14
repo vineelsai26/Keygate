@@ -12,6 +12,7 @@ public enum KeygateError: Error, CustomStringConvertible {
     case importFailed(String)
     case exportFailed(String)
     case vaultLocked
+	case encryptionRequired
 
     public var description: String {
         switch self {
@@ -37,6 +38,8 @@ public enum KeygateError: Error, CustomStringConvertible {
             return "Key export failed: \(message)"
         case .vaultLocked:
             return "Keys are locked; unlock Keygate with your passphrase first"
+		case .encryptionRequired:
+			return "Private-key storage requires vault encryption; run `keygate encrypt` or use Encrypt Keys in the app first"
         }
     }
 }
@@ -73,9 +76,9 @@ public enum SSHKeyType: String, Codable, CaseIterable, Sendable {
     }
 }
 
-/// How a key's private material is protected on disk. Absent (nil) means the
-/// raw material is stored unencrypted (owner-only file permissions); `passphrase`
-/// means AES-256-GCM with a key derived from the vault passphrase.
+/// How a key's private material is protected on disk. `passphrase` means
+/// AES-256-GCM with a key derived from the vault passphrase. A nil value exists
+/// only for metadata written by legacy releases and must be migrated before use.
 public enum KeyEncryption: String, Codable, Sendable {
     case passphrase
 }
@@ -90,7 +93,7 @@ public struct StoredKeyRecord: Codable, Equatable, Identifiable, Sendable {
     public var isSynced: Bool
     public var createdAt: Date
     public var updatedAt: Date
-    /// Encryption applied to the on-disk private material; nil = plaintext.
+	/// Encryption applied to private material; nil denotes a legacy record awaiting migration.
     public var encryption: KeyEncryption?
 
     public init(

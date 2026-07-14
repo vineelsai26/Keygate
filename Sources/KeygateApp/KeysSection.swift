@@ -18,7 +18,9 @@ struct KeysSection: View {
     var body: some View {
         Card(title: "Keys", systemImage: "key") {
             if controller.keys.isEmpty {
-                Text("No SSH keys yet. Generate one below, or import an existing key.")
+				Text(controller.encryptionEnabled
+					 ? "No SSH keys yet. Generate one below, or import an existing key."
+					 : "Encrypt the vault before generating or importing private keys.")
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(controller.keys) { key in
@@ -61,17 +63,19 @@ struct KeysSection: View {
                 } label: {
                     Label("Generate", systemImage: "plus")
                 }
+				.disabled(!controller.encryptionEnabled || controller.vaultLocked)
                 Button {
                     showImport = true
                 } label: {
                     Label("Import…", systemImage: "square.and.arrow.down")
                 }
+				.disabled(!controller.encryptionEnabled || controller.vaultLocked)
                 Spacer()
                 if !controller.encryptionEnabled {
                     Button {
                         showEncryptSheet = true
                     } label: {
-                        Label("Encrypt Keys…", systemImage: "lock")
+					Label("Set Vault Passphrase…", systemImage: "lock")
                     }
                     .help("Encrypt private keys at rest with a passphrase you enter once per launch.")
                 }

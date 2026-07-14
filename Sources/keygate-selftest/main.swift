@@ -338,17 +338,17 @@ func testPassphraseEncryption() throws {
     let payload = Data("keygate passphrase".utf8)
     let vault = makeVault()
 
-    // A key generated before encryption is enabled is stored as raw material.
-    let key = try vault.generate(.ed25519, comment: "pw-test", syncToCloud: false)
-    try expect(!vault.encryptionEnabled(), "encryption should start disabled")
+	// New private material must never be written before encryption is configured.
+	var unencryptedWriteRejected = false
+	do { _ = try vault.generate(.ed25519, comment: "unsafe", syncToCloud: false) }
+	catch KeygateError.encryptionRequired { unencryptedWriteRejected = true }
+	try expect(unencryptedWriteRejected, "unencrypted key generation must be rejected")
+
+	try vault.enableEncryption(passphrase: "correct horse battery")
+	try expect(vault.encryptionEnabled() && !vault.isLocked(), "vault should be enabled and unlocked after enabling")
+	let key = try vault.generate(.ed25519, comment: "pw-test", syncToCloud: false)
     let account = key.keychainAccount.replacingOccurrences(of: "/", with: "_")
     let fileURL = keysDir.appendingPathComponent(account).appendingPathExtension("key")
-    let rawBytes = try Data(contentsOf: fileURL)
-    try expect(rawBytes.count == 32, "unencrypted ed25519 file should be the 32-byte seed")
-
-    // Enabling encryption re-encrypts every existing key in place.
-    try vault.enableEncryption(passphrase: "correct horse battery")
-    try expect(vault.encryptionEnabled() && !vault.isLocked(), "vault should be enabled and unlocked after enabling")
     let record = try vault.listKeys().first { $0.fingerprint == key.fingerprint }!
     try expect(record.encryption == .passphrase, "record should be marked passphrase-encrypted")
     let encryptedBytes = try Data(contentsOf: fileURL)
@@ -391,9 +391,33 @@ func testInterruptedEncryptionMigrationIsRecoverable() throws {
     let configURL = dir.appendingPathComponent("encryption.json")
     defer { try? FileManager.default.removeItem(at: dir) }
 
-    let vault = FileVault(metadataURL: metadataURL, keysDirectory: keysDir, encryptionConfigURL: configURL, authorizer: AllowAllAuthorizer())
-    let first = try vault.generate(.ed25519, comment: "recoverable", syncToCloud: false)
-    let missing = try vault.generate(.ed25519, comment: "missing", syncToCloud: false)
+	try FileManager.default.createDirectory(at: keysDir, withIntermediateDirectories: true)
+	let generated = try [SSHSigner.generate(.ed25519), SSHSigner.generate(.ed25519)]
+	let now = Date()
+	let records = generated.enumerated().map { index, key -> StoredKeyRecord in
+		let fingerprint = Fingerprint.sha256(key.publicBlob)
+		let account = "ed25519-\(fingerprint.replacingOccurrences(of: ":", with: "-"))"
+		try! key.privateMaterial.write(
+			to: keysDir.appendingPathComponent(account.replacingOccurrences(of: "/", with: "_")).appendingPathExtension("key")
+		)
+		return StoredKeyRecord(
+			fingerprint: fingerprint,
+			keyType: .ed25519,
+			comment: index == 0 ? "recoverable" : "missing",
+			publicKey: key.publicBlob,
+			keychainAccount: account,
+			isSynced: false,
+			createdAt: now,
+			updatedAt: now,
+			encryption: nil
+		)
+	}
+	let encoder = JSONEncoder()
+	encoder.dateEncodingStrategy = .iso8601
+	try encoder.encode(records).write(to: metadataURL)
+	let first = records[0]
+	let missing = records[1]
+	let vault = FileVault(metadataURL: metadataURL, keysDirectory: keysDir, encryptionConfigURL: configURL, authorizer: AllowAllAuthorizer())
     let missingURL = keysDir
         .appendingPathComponent(missing.keychainAccount.replacingOccurrences(of: "/", with: "_"))
         .appendingPathExtension("key")
@@ -414,7 +438,7 @@ func testInterruptedEncryptionMigrationIsRecoverable() throws {
 func testPolicyDefaultsAndMatches() throws {
     let key = "SHA256:abc"
     let context = PolicyContext(
-        process: ProcessIdentity(bundleIdentifier: "com.apple.Terminal"),
+		process: ProcessIdentity(bundleIdentifier: "com.apple.Terminal", teamIdentifier: "APPLE"),
         destination: DestinationIdentity(host: "github.com", user: "git"),
         keyFingerprint: key,
         requestFlags: 0
@@ -426,6 +450,7 @@ func testPolicyDefaultsAndMatches() throws {
         name: "Allow GitHub from Terminal",
         keyFingerprint: key,
         appBundleIdentifier: "com.apple.Terminal",
+		teamIdentifier: "APPLE",
         destinationHost: "github.com",
         action: .alwaysAllow
     )
@@ -436,7 +461,8 @@ func testPolicyDefaultsAndMatches() throws {
     let sshContext = PolicyContext(
         process: ProcessIdentity(
             executablePath: "/usr/bin/ssh",
-            terminalBundleIdentifier: "com.apple.Terminal"
+			terminalBundleIdentifier: "com.apple.Terminal",
+			terminalTeamIdentifier: "APPLE"
         ),
         destination: DestinationIdentity(host: "github.com", user: "git"),
         keyFingerprint: key,
@@ -448,6 +474,7 @@ func testPolicyDefaultsAndMatches() throws {
     let keygateOnly = PolicyRule(
         name: "Only Keygate",
         appBundleIdentifier: "dev.vstack.keygate",
+		teamIdentifier: "VSTACK",
         action: .allowForDuration,
         durationSeconds: 600
     )
@@ -564,8 +591,8 @@ func testLockedVaultSkipsTouchID() throws {
         encryptionConfigURL: configURL,
         authorizer: AllowAllAuthorizer()
     )
-    let key = try vault.generate(.ed25519, comment: "locked-key", syncToCloud: false)
     try vault.enableEncryption(passphrase: "session secret")
+	let key = try vault.generate(.ed25519, comment: "locked-key", syncToCloud: false)
     vault.lock()
     try expect(vault.isLocked(), "vault must be locked for this test")
 
@@ -624,8 +651,8 @@ func testEnvironmentPassphraseUnlocksAgent() throws {
         encryptionConfigURL: dir.appendingPathComponent("encryption.json"),
         authorizer: AllowAllAuthorizer()
     )
-    let key = try vault.generate(.ed25519, comment: "env-key", syncToCloud: false)
     try vault.enableEncryption(passphrase: "environment secret")
+	let key = try vault.generate(.ed25519, comment: "env-key", syncToCloud: false)
     vault.lock()
     setenv("KEYGATE_PASSPHRASE", "environment secret", 1)
     defer { unsetenv("KEYGATE_PASSPHRASE") }
@@ -702,12 +729,14 @@ func testNestedApplicationAttribution() throws {
     let vscodeRule = PolicyRule(
         name: "Allow VS Code",
         appBundleIdentifier: "com.microsoft.VSCode",
+		teamIdentifier: "MICROSOFT",
         action: .alwaysAllow
     )
     let helperContext = PolicyContext(
         process: ProcessIdentity(
             executablePath: "/usr/bin/ssh",
-            terminalBundleIdentifier: "com.microsoft.VSCode"
+			terminalBundleIdentifier: "com.microsoft.VSCode",
+			terminalTeamIdentifier: "MICROSOFT"
         ),
         destination: DestinationIdentity(),
         keyFingerprint: "SHA256:vscode",
@@ -715,6 +744,15 @@ func testNestedApplicationAttribution() throws {
     )
     try expect(PolicyEngine(rules: [vscodeRule]).decide(helperContext).action == .alwaysAllow,
                "a nested VS Code helper must be attributed to the outer VS Code rule")
+
+	let spoofed = PolicyContext(
+		process: ProcessIdentity(bundleIdentifier: "com.microsoft.VSCode"),
+		destination: DestinationIdentity(),
+		keyFingerprint: "SHA256:vscode",
+		requestFlags: 0
+	)
+	try expect(PolicyEngine(rules: [vscodeRule]).decide(spoofed).action == .requireUserPresence,
+	           "an unsigned bundle-ID spoof must not match an allow rule")
 }
 
 /// A client that disconnects before reading the response must not kill the agent
