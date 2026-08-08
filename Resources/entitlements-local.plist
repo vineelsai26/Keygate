@@ -14,5 +14,16 @@
   <false/>
   <key>com.apple.security.network.client</key>
   <true/>
+  <!--
+    Access group for the biometric-bound vault-passphrase item in the
+    data-protection Keychain. Unlike the iCloud entitlements above, a
+    keychain-access-group is freely assignable and does not block launch under a
+    self-signed cert. When the data-protection Keychain is unavailable, storage
+    fails closed (the passphrase is simply not persisted).
+  -->
+  <key>keychain-access-groups</key>
+  <array>
+    <string>dev.vstack.keygate</string>
+  </array>
 </dict>
 </plist>

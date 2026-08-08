@@ -39,12 +39,12 @@ bundle: build
 sign:
 	@if security find-identity -p codesigning 2>/dev/null | grep -qF "$(SIGN_IDENTITY)"; then \
 		echo "Signing with '$(SIGN_IDENTITY)' (local entitlements, no iCloud)"; \
-		codesign --force --sign "$(SIGN_IDENTITY)" --timestamp=none "$(MACOS)/$(CLI)"; \
-		codesign --force --sign "$(SIGN_IDENTITY)" --entitlements Resources/entitlements-local.plist --timestamp=none "$(APP)"; \
+		codesign --force --options runtime --sign "$(SIGN_IDENTITY)" --timestamp=none "$(MACOS)/$(CLI)"; \
+		codesign --force --options runtime --sign "$(SIGN_IDENTITY)" --entitlements Resources/entitlements-local.plist --timestamp=none "$(APP)"; \
 	else \
 		echo "No '$(SIGN_IDENTITY)' identity — signing ad-hoc without CloudKit entitlements."; \
-		codesign --force --sign - --timestamp=none "$(MACOS)/$(CLI)"; \
-		codesign --force --sign - --timestamp=none "$(APP)"; \
+		codesign --force --options runtime --sign - --timestamp=none "$(MACOS)/$(CLI)"; \
+		codesign --force --options runtime --sign - --timestamp=none "$(APP)"; \
 	fi
 	@codesign --verify --verbose "$(APP)" && echo "Signed: $(APP)"
 
@@ -53,7 +53,7 @@ cli: build
 	@cp "$(BUILD_DIR)/$(CLI)" "$(DIST)/$(CLI)"
 	@if security find-identity -p codesigning 2>/dev/null | grep -qF "$(SIGN_IDENTITY)"; then \
 		echo "Signing CLI with '$(SIGN_IDENTITY)' so it shares the app's Keychain identity"; \
-		codesign --force --sign "$(SIGN_IDENTITY)" --timestamp=none "$(DIST)/$(CLI)"; \
+		codesign --force --options runtime --sign "$(SIGN_IDENTITY)" --timestamp=none "$(DIST)/$(CLI)"; \
 	fi
 	@echo "CLI at $(DIST)/$(CLI)"
 

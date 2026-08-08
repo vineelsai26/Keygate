@@ -63,8 +63,16 @@ final class AppSettings: ObservableObject {
         closeToMenuBar || startInMenuBar || !showInDock
     }
 
-    func applyActivationPolicy() {
-        NSApp.setActivationPolicy(showInDock ? .regular : .accessory)
+    @discardableResult
+    func applyActivationPolicy() -> Bool {
+        let desiredPolicy: NSApplication.ActivationPolicy = showInDock ? .regular : .accessory
+        guard NSApp.activationPolicy() != desiredPolicy else { return true }
+
+        let applied = NSApp.setActivationPolicy(desiredPolicy)
+        if !applied {
+            NSLog("Keygate: failed to apply activation policy \(desiredPolicy.rawValue)")
+        }
+        return applied
     }
 
     private func applyLoginItem() {

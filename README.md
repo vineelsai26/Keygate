@@ -59,6 +59,12 @@ make app
 make cli
 ```
 
+The UI lives in a `KeygateUI` library target (public `KeygateRuntime` + view
+wrappers; `KeygateController` takes an `allowAutostart` flag so an embedded
+instance never auto-binds the SSH agent socket). `KeygateApp` is a thin `@main`
+wrapper. This lets Keygate also run embedded in-process inside PowerTools while
+`KeygateCore` remains the agent/vault/policy layer.
+
 ### Code signing (Touch ID)
 
 `make app`/`make cli` sign with a local identity named **Keygate Local Signing**
@@ -131,11 +137,19 @@ keygate diagnose
   re-prompts for the login password on every use.
 - Mandatory passphrase encryption at rest: enable it (app "Set Vault Passphrase…" or
   `keygate encrypt`) before creating or importing keys. It seals each key file with AES-256-GCM under a key derived
-  from your passphrase via PBKDF2-HMAC-SHA256 (600k iterations). The passphrase
-  and derived key never touch disk or the Keychain; the key is cached in memory
-  for the session. Unlock once per app launch (`KEYGATE_PASSPHRASE` for scripts).
-  Secure Enclave was evaluated but needs an entitlement a self-signed build can't
-  carry, so passphrase encryption is the at-rest option here.
+  from your passphrase via PBKDF2-HMAC-SHA256 (600k iterations). The derived key
+  never touches disk and is cached in memory only for the session. Unlock once
+  per app launch (`KEYGATE_PASSPHRASE` for scripts). Secure Enclave was evaluated
+  but needs an entitlement a self-signed build can't carry, so passphrase
+  encryption is the at-rest option here.
+- Optional Touch ID unlock ("Save passphrase for Touch ID unlock"): when enabled,
+  the vault passphrase is stored in the login Keychain bound to a biometric /
+  user-presence access control, so the Keychain itself refuses to release it
+  without a fresh Touch ID (or login-password) result — retrieval is not gated by
+  app control flow alone. Storage is fail-closed: if the data-protection Keychain
+  or a biometric access control is unavailable (some self-signed/ad-hoc builds),
+  the passphrase is not persisted and you retype it each session. Turn the option
+  off to delete the stored passphrase.
 - Signing decisions of `requireUserPresence`, `askEveryTime`, and (on first use
   per window) `allowForDuration` prompt for Touch ID/password through
   LocalAuthentication before the key file is read. Because this gate is in the

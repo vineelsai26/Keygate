@@ -357,6 +357,14 @@ struct RuleEditorSheet: View {
                 }
                 TextField("Executable path", text: $executablePath, prompt: Text("e.g. /usr/bin/ssh"))
                 TextField("Team ID", text: $teamIdentifier, prompt: Text("10-character developer team ID"))
+                if PolicyEngine.isSilentGrant(action), normalized(teamIdentifier) == nil {
+                    Label(
+                        "Without a verified Team ID this rule can't skip the prompt — it will still ask for Touch ID/password. Use “Choose…” above to bind a signed app, or set a Team ID.",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                }
             }
             .formStyle(.columns)
         } actions: {

@@ -29,9 +29,14 @@ final class KeygateController: ObservableObject {
     private let cloudSync = CloudSyncService()
     private var server: AgentSocketServer?
 
-    init() {
+    /// `allowAutostart` is false when Keygate runs embedded (e.g. inside
+    /// PowerTools): the SSH agent socket is a singleton, so an embedded
+    /// instance must not auto-bind it and fight a standalone Keygate. The user
+    /// can still start the agent explicitly, and the bind fails cleanly if the
+    /// socket is already owned.
+    init(allowAutostart: Bool = true) {
         refresh()
-        if AppSettings.shared.autostartAgent, !agentRunning {
+        if allowAutostart, AppSettings.shared.autostartAgent, !agentRunning {
             toggleAgent()
         }
         NSWorkspace.shared.notificationCenter.addObserver(
@@ -132,16 +137,11 @@ final class KeygateController: ObservableObject {
 
         let vault = self.vault
         DispatchQueue.global(qos: .userInitiated).async {
-            let authorized = LocalAuthorizer().authorize(reason: "Unlock Keygate vault")
-            guard authorized else {
-                DispatchQueue.main.async {
-                    self.errorMessage = "Touch ID was cancelled or failed"
-                    completion?(false)
-                }
-                return
-            }
             do {
-                guard let passphrase = try VaultPassphraseStore.load() else {
+                // The biometric prompt is enforced by the Keychain item's access
+                // control; loadWithAuthentication authenticates once and reuses
+                // the result to release the secret.
+                guard let passphrase = try VaultPassphraseStore.loadWithAuthentication(reason: "Unlock Keygate vault") else {
                     DispatchQueue.main.async {
                         self.errorMessage = "No passphrase found in Keychain"
                         self.refresh()
@@ -155,6 +155,11 @@ final class KeygateController: ObservableObject {
                     self.noticeMessage = "Vault unlocked with Touch ID"
                     self.refresh()
                     completion?(true)
+                }
+            } catch VaultPassphraseStore.StoreError.authenticationFailed {
+                DispatchQueue.main.async {
+                    self.errorMessage = "Touch ID was cancelled or failed"
+                    completion?(false)
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -302,19 +307,31 @@ final class KeygateController: ObservableObject {
         saveRules(rules.filter { $0.id != rule.id })
     }
 
+    /// Creates an always-allow rule for the app that most recently used this key,
+    /// bound to that app's verified team identity. The requesting identity comes
+    /// from the audit log — not `Bundle.main` (Keygate itself), which could never
+    /// match a requesting ssh/git peer and left the feature inert.
     func addAlwaysAllowRule(for key: StoredKeyRecord) {
-        let bundleID = Bundle.main.bundleIdentifier
+        guard let event = auditEvents.first(where: { $0.keyFingerprint == key.fingerprint }) else {
+            errorMessage = "Use this key once from the app you want to always allow, then try again."
+            return
+        }
+        let appName = ProcessResolver.displayName(event.process)
+        guard let rule = PolicyRule.alwaysAllow(
+            forKeyFingerprint: key.fingerprint,
+            requestingProcess: event.process,
+            name: "Always allow \(appName) for \(key.comment)"
+        ) else {
+            errorMessage = "“\(appName)” could not be verified by its developer team, so it cannot be granted a no-prompt rule."
+            return
+        }
         guard !rules.contains(where: {
-            $0.action == .alwaysAllow && $0.keyFingerprint == key.fingerprint && $0.appBundleIdentifier == bundleID
+            $0.action == .alwaysAllow
+                && $0.keyFingerprint == rule.keyFingerprint
+                && $0.appBundleIdentifier == rule.appBundleIdentifier
+                && $0.teamIdentifier == rule.teamIdentifier
         }) else { return }
-        var next = rules
-        next.append(PolicyRule(
-            name: "Always allow current app for \(key.comment)",
-            keyFingerprint: key.fingerprint,
-            appBundleIdentifier: bundleID,
-            action: .alwaysAllow
-        ))
-        saveRules(next)
+        saveRules(rules + [rule])
     }
 
     func saveRules(_ next: [PolicyRule]) {

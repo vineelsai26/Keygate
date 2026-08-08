@@ -18,10 +18,19 @@ public final class PolicyStore {
     }
 
     public func save(_ rules: [PolicyRule]) throws {
-        // Callers may inject a shared directory (e.g. NSTemporaryDirectory in
-        // self-tests), so constrain the policy file itself rather than chmod an
-        // existing parent outside this store's ownership.
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // Create the Keygate directory owner-only when this store is the first to
+        // make it, mirroring AuditLog / FileVault. Callers may inject a shared
+        // parent (e.g. NSTemporaryDirectory in self-tests), so an already-existing
+        // directory outside this store's ownership is left untouched.
+        let directory = url.deletingLastPathComponent()
+        if !FileManager.default.fileExists(atPath: directory.path) {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        }
         let data = try encoder.encode(rules)
         try data.write(to: url, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)

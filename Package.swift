@@ -8,6 +8,9 @@ let package = Package(
     ],
     products: [
         .library(name: "KeygateCore", targets: ["KeygateCore"]),
+        // The app's UI as a library, so it can be embedded (e.g. in PowerTools)
+        // as well as run standalone.
+        .library(name: "KeygateUI", targets: ["KeygateUI"]),
         .executable(name: "KeygateApp", targets: ["KeygateApp"]),
         .executable(name: "keygate", targets: ["keygate-cli"]),
         .executable(name: "keygate-selftest", targets: ["keygate-selftest"]),
@@ -27,10 +30,18 @@ let package = Package(
             dependencies: ["CBcryptPBKDF"],
             path: "Sources/KeygateCore"
         ),
+        .target(
+            name: "KeygateUI",
+            dependencies: [
+                "KeygateCore",
+                .product(name: "VKit", package: "vkit"),
+            ],
+            path: "Sources/KeygateUI"
+        ),
         .executableTarget(
             name: "KeygateApp",
             dependencies: [
-                "KeygateCore",
+                "KeygateCore", "KeygateUI",
                 .product(name: "VKit", package: "vkit"),
             ],
             path: "Sources/KeygateApp"

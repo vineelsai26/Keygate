@@ -153,6 +153,20 @@ public struct PolicyEngine {
 
     public func decide(_ context: PolicyContext) -> PolicyDecision {
         for rule in rules where matches(rule, context) {
+            // A silent grant (alwaysAllow / allowForDuration) must be bound to a
+            // verified code-signing team. Bundle-scoped rules already require one
+            // (see `matches`); a path-only, key-only, or unconditional rule carries
+            // no cryptographic identity, so honoring it without a prompt would let
+            // any local process reaching the agent through that path use the key.
+            // Downgrade such a rule to a user-presence prompt rather than granting
+            // silently (or ignoring it, which would hide the misconfiguration).
+            if PolicyEngine.isSilentGrant(rule.action), rule.teamIdentifier == nil {
+                return PolicyDecision(
+                    action: .requireUserPresence,
+                    rule: rule,
+                    reason: "Matched rule \"\(rule.name)\" without a verified app identity; requiring Touch ID/password"
+                )
+            }
             return PolicyDecision(action: rule.action, rule: rule, reason: "Matched rule: \(rule.name)")
         }
 
@@ -161,6 +175,12 @@ public struct PolicyEngine {
         }
 
         return PolicyDecision(action: .requireUserPresence, rule: nil, reason: "No matching rule; required Touch ID/password by default")
+    }
+
+    /// Actions that authorize a signature without an interactive prompt. These
+    /// require a verified team binding; otherwise `decide` downgrades them.
+    public static func isSilentGrant(_ action: PolicyAction) -> Bool {
+        action == .alwaysAllow || action == .allowForDuration
     }
 
     private func matches(_ rule: PolicyRule, _ context: PolicyContext) -> Bool {
@@ -188,5 +208,39 @@ public struct PolicyEngine {
         if let user = rule.destinationUser, user != context.destination.user { return false }
         if let forwarding = rule.forwardingOnly, forwarding != context.destination.isForwarding { return false }
         return true
+    }
+}
+
+public extension PolicyRule {
+    /// Builds an "always allow" rule bound to the verified code-signing identity
+    /// of the app that made a request. Returns `nil` when the requesting process
+    /// carries no team-verified app identity — bundle IDs alone are spoofable, so
+    /// a rule without a team can never safely match (`PolicyEngine.matches`), and
+    /// a rule bound to Keygate's own bundle (the previous behavior) could never
+    /// match a requesting ssh/git peer at all.
+    ///
+    /// Prefers the owning terminal / GUI application, since CLI peers (ssh, git)
+    /// expose the launching app through the terminal identity fields.
+    static func alwaysAllow(
+        forKeyFingerprint fingerprint: String,
+        requestingProcess process: ProcessIdentity,
+        name: String
+    ) -> PolicyRule? {
+        let identity: (bundle: String, team: String)?
+        if let bundle = process.terminalBundleIdentifier, let team = process.terminalTeamIdentifier {
+            identity = (bundle, team)
+        } else if let bundle = process.bundleIdentifier, let team = process.teamIdentifier {
+            identity = (bundle, team)
+        } else {
+            identity = nil
+        }
+        guard let identity else { return nil }
+        return PolicyRule(
+            name: name,
+            keyFingerprint: fingerprint,
+            appBundleIdentifier: identity.bundle,
+            teamIdentifier: identity.team,
+            action: .alwaysAllow
+        )
     }
 }

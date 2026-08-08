@@ -482,6 +482,86 @@ func testPolicyDefaultsAndMatches() throws {
     try expect(miss.action == .requireUserPresence, "Keygate-only rule must not match ssh")
 }
 
+/// Silent-grant rules (alwaysAllow / allowForDuration) that carry no verified
+/// team must not authorize without a prompt: a path-only, key-only, or empty
+/// rule provides no cryptographic identity, so the engine downgrades it to
+/// requireUserPresence instead of granting silently.
+func testUnauthenticatedSilentGrantDowngrade() throws {
+    let fingerprint = "SHA256:downgrade"
+    let peer = PolicyContext(
+        process: ProcessIdentity(executablePath: "/usr/bin/ssh"),
+        destination: DestinationIdentity(),
+        keyFingerprint: fingerprint,
+        requestFlags: 0
+    )
+
+    let pathOnly = PolicyRule(name: "Path only", executablePath: "/usr/bin/ssh", action: .alwaysAllow)
+    let pathDecision = PolicyEngine(rules: [pathOnly]).decide(peer)
+    try expect(pathDecision.action == .requireUserPresence,
+               "path-only alwaysAllow must be downgraded, got \(pathDecision.action)")
+    try expect(pathDecision.rule?.id == pathOnly.id, "downgrade must still attribute the matched rule")
+
+    let keyOnly = PolicyRule(name: "Key only", keyFingerprint: fingerprint, action: .alwaysAllow)
+    try expect(PolicyEngine(rules: [keyOnly]).decide(peer).action == .requireUserPresence,
+               "key-only alwaysAllow must be downgraded")
+
+    let empty = PolicyRule(name: "Anything", action: .allowForDuration, durationSeconds: 600)
+    try expect(PolicyEngine(rules: [empty]).decide(peer).action == .requireUserPresence,
+               "unconditional allowForDuration must be downgraded")
+
+    // A non-granting rule still applies as written even without a team.
+    let denyPath = PolicyRule(name: "Deny ssh", executablePath: "/usr/bin/ssh", action: .deny)
+    try expect(PolicyEngine(rules: [denyPath]).decide(peer).action == .deny,
+               "deny rules must not be downgraded")
+
+    // A team-bound rule keeps its silent grant.
+    let teamBound = PolicyRule(
+        name: "Team ssh",
+        executablePath: "/usr/bin/ssh",
+        teamIdentifier: "APPLE",
+        action: .alwaysAllow
+    )
+    let teamPeer = PolicyContext(
+        process: ProcessIdentity(executablePath: "/usr/bin/ssh", teamIdentifier: "APPLE"),
+        destination: DestinationIdentity(),
+        keyFingerprint: fingerprint,
+        requestFlags: 0
+    )
+    try expect(PolicyEngine(rules: [teamBound]).decide(teamPeer).action == .alwaysAllow,
+               "a team-bound alwaysAllow must still grant silently")
+}
+
+/// The "Always Allow This App" rule must bind to the requesting app's verified
+/// team identity and actually match that peer — the old rule (Keygate's own
+/// bundle, no team) could never match.
+func testAlwaysAllowRuleBindsRequestingApp() throws {
+    let fingerprint = "SHA256:always-allow"
+    // A CLI peer (ssh) launched from a signed terminal application.
+    let sshPeer = ProcessIdentity(
+        executablePath: "/usr/bin/ssh",
+        terminalBundleIdentifier: "com.apple.Terminal",
+        terminalTeamIdentifier: "APPLE"
+    )
+    guard let rule = PolicyRule.alwaysAllow(
+        forKeyFingerprint: fingerprint,
+        requestingProcess: sshPeer,
+        name: "always"
+    ) else {
+        throw TestFailure(description: "alwaysAllow rule should be built for a verified terminal app")
+    }
+    try expect(rule.appBundleIdentifier == "com.apple.Terminal", "rule must carry the terminal bundle")
+    try expect(rule.teamIdentifier == "APPLE", "rule must carry the verified team")
+
+    let context = PolicyContext(process: sshPeer, destination: DestinationIdentity(), keyFingerprint: fingerprint, requestFlags: 0)
+    try expect(PolicyEngine(rules: [rule]).decide(context).action == .alwaysAllow,
+               "the produced rule must match the requesting peer without a prompt")
+
+    // A process with no verified team cannot be granted a no-prompt rule.
+    let unsigned = ProcessIdentity(executablePath: "/usr/bin/ssh")
+    try expect(PolicyRule.alwaysAllow(forKeyFingerprint: fingerprint, requestingProcess: unsigned, name: "n") == nil,
+               "an unverified process must not produce an always-allow rule")
+}
+
 func testVaultAndAgentService() throws {
     let vault = InMemoryVault()
     let key = try vault.generateEd25519(comment: "selftest", syncToCloud: false)
@@ -490,7 +570,10 @@ func testVaultAndAgentService() throws {
     let auditURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("keygate-audit-\(UUID().uuidString).jsonl")
     let policyStore = PolicyStore(url: policyURL)
     try policyStore.save(rules)
-    let service = AgentService(vault: vault, policyStore: policyStore, auditLog: AuditLog(url: auditURL))
+    // A key-only alwaysAllow rule has no verified team, so the engine now
+    // downgrades it to requireUserPresence; approve via AllowAllAuthorizer so this
+    // round-trip still exercises signing rather than a headless Touch ID prompt.
+    let service = AgentService(vault: vault, policyStore: policyStore, auditLog: AuditLog(url: auditURL), authorizer: AllowAllAuthorizer())
 
     guard case .identities(let identities) = service.handle(.requestIdentities, process: ProcessIdentity()) else {
         throw TestFailure(description: "service did not return identities")
@@ -921,20 +1004,29 @@ func testVaultPassphraseStore() throws {
     defer { _ = VaultPassphraseStore.delete(serviceName: service, accountName: account) }
     try expect(!VaultPassphraseStore.isStored(serviceName: service, accountName: account), "store should start empty")
 
-    try VaultPassphraseStore.save("correct horse battery", serviceName: service, accountName: account)
-    try expect(VaultPassphraseStore.isStored(serviceName: service, accountName: account), "store should report stored after save")
-    let loaded = try VaultPassphraseStore.load(serviceName: service, accountName: account)
-    try expect(loaded == "correct horse battery", "loaded passphrase mismatch: \(loaded ?? "nil")")
+    // The passphrase item is bound to a biometric / user-presence access control
+    // in the data-protection Keychain, which is not always available in a headless
+    // or self-signed test harness. The security contract is fail-closed: we never
+    // fall back to a plaintext item. If a protected save is not possible, verify
+    // nothing was stored and skip the interactive portion.
+    do {
+        try VaultPassphraseStore.save("correct horse battery", serviceName: service, accountName: account)
+    } catch {
+        try expect(!VaultPassphraseStore.isStored(serviceName: service, accountName: account),
+                   "a failed secure save must not leave a passphrase behind")
+        return
+    }
 
-    // Replace in place.
-    try VaultPassphraseStore.save("new secret", serviceName: service, accountName: account)
-    let replaced = try VaultPassphraseStore.load(serviceName: service, accountName: account)
-    try expect(replaced == "new secret", "replace should overwrite")
+    try expect(VaultPassphraseStore.isStored(serviceName: service, accountName: account), "store should report stored after save")
+    // The passphrase must not be readable via a plain SecItemCopyMatching — the
+    // Keychain ACL, not app-side control flow, gates retrieval. With auth UI
+    // suppressed a gated item reports interactionNotAllowed; an unprotected item
+    // (the original vulnerability) would hand back the secret with no challenge.
+    try expect(VaultPassphraseStore.requiresAuthenticationToRead(serviceName: service, accountName: account),
+               "stored passphrase must require authentication to read")
 
     try expect(VaultPassphraseStore.delete(serviceName: service, accountName: account), "delete should succeed")
     try expect(!VaultPassphraseStore.isStored(serviceName: service, accountName: account), "store should be empty after delete")
-    let afterDelete = try VaultPassphraseStore.load(serviceName: service, accountName: account)
-    try expect(afterDelete == nil, "load after delete should be nil")
 }
 
 func testGitSigningInstaller() throws {
@@ -1003,6 +1095,8 @@ let tests: [(String, () throws -> Void)] = [
     ("passphrase encryption", testPassphraseEncryption),
     ("interrupted encryption migration", testInterruptedEncryptionMigrationIsRecoverable),
     ("policy defaults and matches", testPolicyDefaultsAndMatches),
+    ("unauthenticated silent grant downgrade", testUnauthenticatedSilentGrantDowngrade),
+    ("always allow rule binds requesting app", testAlwaysAllowRuleBindsRequestingApp),
     ("vault and agent service", testVaultAndAgentService),
     ("authorization reason names app", testAuthorizationReasonNamesRequestingApp),
     ("locked vault skips Touch ID", testLockedVaultSkipsTouchID),
