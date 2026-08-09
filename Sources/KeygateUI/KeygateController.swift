@@ -27,7 +27,15 @@ final class KeygateController: ObservableObject {
     private let policyStore = PolicyStore()
     private let auditLog = AuditLog()
     private let cloudSync = CloudSyncService()
+    private let biometricUnlock = BiometricUnlockSingleFlight()
     private var server: AgentSocketServer?
+    /// Older versions did not create a prompt-free presence marker. Honor the
+    /// saved preference as a migration hint until a protected lookup proves no
+    /// legacy item exists.
+    private var allowLegacyBiometricPresenceHint = true
+    /// Auto-prompt only once for a locked-vault cycle. A failed or cancelled
+    /// automatic attempt leaves the explicit Touch ID button available.
+    private var attemptedAutomaticBiometricUnlock = false
 
     /// `allowAutostart` is false when Keygate runs embedded (e.g. inside
     /// PowerTools): the SSH agent socket is a singleton, so an embedded
@@ -64,7 +72,10 @@ final class KeygateController: ObservableObject {
             let gitStatus = GitSigningInstaller.status()
             gitSigningConfigured = gitStatus.isConfigured
             gitSigningStatusMessage = gitStatus.message
+            // The preference is also a migration hint for protected items saved
+            // by older builds before the prompt-free presence marker existed.
             passphraseStoredInKeychain = VaultPassphraseStore.isStored()
+                || (allowLegacyBiometricPresenceHint && AppSettings.shared.unlockWithTouchID)
             errorMessage = nil
         } catch {
             errorMessage = "\(error)"
@@ -104,68 +115,92 @@ final class KeygateController: ObservableObject {
 
     /// Unlocks with a typed passphrase. Optionally stores it for future Touch ID unlocks.
     func unlockVault(passphrase: String, saveToKeychain: Bool? = nil) {
+        var feedback: String?
         do {
             try vault.unlock(passphrase: passphrase)
             let shouldSave = saveToKeychain ?? AppSettings.shared.unlockWithTouchID
             if shouldSave {
-                try VaultPassphraseStore.save(passphrase)
-                AppSettings.shared.unlockWithTouchID = true
-                noticeMessage = "Vault unlocked. Passphrase saved for Touch ID."
+                do {
+                    try VaultPassphraseStore.save(passphrase)
+                    AppSettings.shared.unlockWithTouchID = true
+                    noticeMessage = "Vault unlocked. Passphrase saved for Touch ID."
+                } catch {
+                    feedback = "Vault unlocked, but Touch ID setup failed: \(error)"
+                }
             } else if saveToKeychain == false {
                 _ = VaultPassphraseStore.delete()
             }
             errorMessage = nil
         } catch {
-            errorMessage = "\(error)"
+            feedback = "\(error)"
         }
         refresh()
+        if let feedback { errorMessage = feedback }
     }
 
     /// Touch ID (or Mac password) → load passphrase from Keychain → unlock vault.
     ///
     /// LocalAuthentication must not block the main thread (its callback needs the
     /// run loop), so work runs on a background queue and results hop back to MainActor.
-    func tryBiometricUnlockIfAvailable(completion: ((Bool) -> Void)? = nil) {
+    func tryBiometricUnlockIfAvailable(
+        automatically: Bool = false,
+        completion: ((Bool) -> Void)? = nil
+    ) {
         guard vault.encryptionEnabled(), vault.isLocked() else {
             completion?(!vault.isLocked() || !vault.encryptionEnabled())
             return
         }
-        guard VaultPassphraseStore.isStored() else {
+        // `passphraseStoredInKeychain` also carries the one-time migration hint
+        // for protected items created before the prompt-free marker existed.
+        guard passphraseStoredInKeychain else {
             completion?(false)
             return
         }
 
+        if automatically {
+            // Reconstructed sheet views join an active attempt, but must not
+            // start another automatic prompt after that attempt completes.
+            guard !attemptedAutomaticBiometricUnlock || biometricUnlock.isRunning else {
+                completion?(false)
+                return
+            }
+            attemptedAutomaticBiometricUnlock = true
+        }
+
         let vault = self.vault
-        DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                // The biometric prompt is enforced by the Keychain item's access
-                // control; loadWithAuthentication authenticates once and reuses
-                // the result to release the secret.
-                guard let passphrase = try VaultPassphraseStore.loadWithAuthentication(reason: "Unlock Keygate vault") else {
-                    DispatchQueue.main.async {
-                        self.errorMessage = "No passphrase found in Keychain"
-                        self.refresh()
-                        completion?(false)
+        biometricUnlock.run(completion: completion) { finish in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    // The Keychain item's access control owns the sole system
+                    // authentication prompt and releases the passphrase only
+                    // after that attempt succeeds.
+                    guard let passphrase = try VaultPassphraseStore.loadWithAuthentication(reason: "Unlock Keygate vault") else {
+                        DispatchQueue.main.async {
+                            self.allowLegacyBiometricPresenceHint = false
+                            self.errorMessage = "No passphrase found in Keychain"
+                            self.refresh()
+                            finish(false)
+                        }
+                        return
                     }
-                    return
-                }
-                try vault.unlock(passphrase: passphrase)
-                DispatchQueue.main.async {
-                    self.errorMessage = nil
-                    self.noticeMessage = "Vault unlocked with Touch ID"
-                    self.refresh()
-                    completion?(true)
-                }
-            } catch VaultPassphraseStore.StoreError.authenticationFailed {
-                DispatchQueue.main.async {
-                    self.errorMessage = "Touch ID was cancelled or failed"
-                    completion?(false)
-                }
-            } catch {
-                DispatchQueue.main.async {
-                    self.errorMessage = "\(error)"
-                    self.refresh()
-                    completion?(false)
+                    try vault.unlock(passphrase: passphrase)
+                    DispatchQueue.main.async {
+                        self.errorMessage = nil
+                        self.noticeMessage = "Vault unlocked with Touch ID"
+                        self.refresh()
+                        finish(true)
+                    }
+                } catch VaultPassphraseStore.StoreError.authenticationFailed {
+                    DispatchQueue.main.async {
+                        self.errorMessage = "Touch ID was cancelled or failed"
+                        finish(false)
+                    }
+                } catch {
+                    DispatchQueue.main.async {
+                        self.errorMessage = "\(error)"
+                        self.refresh()
+                        finish(false)
+                    }
                 }
             }
         }
@@ -173,6 +208,7 @@ final class KeygateController: ObservableObject {
 
     func lockVault() {
         vault.lock()
+        attemptedAutomaticBiometricUnlock = false
         refresh()
     }
 

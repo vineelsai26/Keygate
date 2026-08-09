@@ -1029,6 +1029,31 @@ func testVaultPassphraseStore() throws {
     try expect(!VaultPassphraseStore.isStored(serviceName: service, accountName: account), "store should be empty after delete")
 }
 
+func testBiometricUnlockSingleFlight() throws {
+    let singleFlight = BiometricUnlockSingleFlight()
+    var starts = 0
+    var finish: ((Bool) -> Void)?
+    var results: [Bool] = []
+
+    singleFlight.run(completion: { results.append($0) }) { operationFinish in
+        starts += 1
+        finish = operationFinish
+    }
+    singleFlight.run(completion: { results.append($0) }) { _ in
+        starts += 1
+    }
+
+    try expect(starts == 1, "overlapping unlock requests must start one authentication")
+    try expect(singleFlight.isRunning, "unlock should remain in flight until authentication completes")
+
+    finish?(true)
+    try expect(results == [true, true], "all overlapping callers must receive the shared result")
+    try expect(!singleFlight.isRunning, "unlock should leave the in-flight state after completion")
+
+    singleFlight.run(completion: nil) { _ in starts += 1 }
+    try expect(starts == 2, "a later explicit unlock should be allowed to start")
+}
+
 func testGitSigningInstaller() throws {
     let home = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("keygate-git-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
@@ -1108,6 +1133,7 @@ let tests: [(String, () throws -> Void)] = [
     ("key management operations", testKeyManagementOperations),
     ("setup installer", testSetupInstaller),
     ("vault passphrase store", testVaultPassphraseStore),
+    ("biometric unlock single flight", testBiometricUnlockSingleFlight),
     ("git signing installer", testGitSigningInstaller),
 ]
 

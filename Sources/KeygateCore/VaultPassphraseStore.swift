@@ -55,19 +55,37 @@ public enum VaultPassphraseStore {
         ]
     }
 
-    /// True when a passphrase item exists. Does not prompt or return the secret
-    /// (existence checks never trip the access control, so no biometric UI).
+    /// A separate, non-secret item records that the protected passphrase exists.
+    /// Looking up the protected item's attributes can itself trigger its
+    /// user-presence ACL on macOS, so normal UI refreshes must query only this
+    /// marker. The passphrase remains exclusively in the protected item.
+    private static func markerQuery(serviceName: String, accountName: String) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "\(serviceName).presence",
+            kSecAttrAccount as String: accountName,
+            kSecUseDataProtectionKeychain as String: true,
+        ]
+    }
+
+    private static func saveMarker(serviceName: String, accountName: String) throws {
+        var query = markerQuery(serviceName: serviceName, accountName: accountName)
+        query[kSecAttrLabel as String] = "Keygate Vault Passphrase Presence"
+        query[kSecAttrDescription as String] = "Non-secret marker for Touch ID unlock availability"
+        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        query[kSecValueData as String] = Data([1])
+        let status = SecItemAdd(query as CFDictionary, nil)
+        guard status == errSecSuccess || status == errSecDuplicateItem else {
+            throw StoreError.keychain(status)
+        }
+    }
+
+    /// True when the non-secret presence marker exists. This query never touches
+    /// the protected passphrase item and therefore cannot present Touch ID.
     public static func isStored(serviceName: String = service, accountName: String = account) -> Bool {
-        var query = baseQuery(serviceName: serviceName, accountName: accountName)
-        query[kSecReturnData as String] = false
+        var query = markerQuery(serviceName: serviceName, accountName: accountName)
         query[kSecMatchLimit as String] = kSecMatchLimitOne
-        query[kSecUseDataProtectionKeychain as String] = true
-        // Never surface authentication UI merely to test for existence.
-        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUISkip
-        let status = SecItemCopyMatching(query as CFDictionary, nil)
-        // A biometric-gated item may report interactionNotAllowed here; it still
-        // exists. Anything but "not found" (or a hard error) means it is stored.
-        return status == errSecSuccess || status == errSecInteractionNotAllowed
+        return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
     }
 
     /// Saves or replaces the stored passphrase, binding it to a biometric /
@@ -104,6 +122,7 @@ public enum VaultPassphraseStore {
 
         let status = SecItemAdd(query as CFDictionary, nil)
         guard status == errSecSuccess else { throw StoreError.keychain(status) }
+        try saveMarker(serviceName: serviceName, accountName: accountName)
     }
 
     /// Authenticates the user (Touch ID / login password) and returns the stored
@@ -113,7 +132,6 @@ public enum VaultPassphraseStore {
     /// control; a single freshly-authenticated `LAContext` is reused for the
     /// retrieval so the user is prompted exactly once.
     public static func loadWithAuthentication(reason: String, serviceName: String = service, accountName: String = account) throws -> String? {
-        guard isStored(serviceName: serviceName, accountName: accountName) else { return nil }
         #if canImport(LocalAuthentication)
         let context = LAContext()
         context.localizedFallbackTitle = "Use Password…"
@@ -121,17 +139,19 @@ public enum VaultPassphraseStore {
         guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &policyError) else {
             throw StoreError.biometricsUnavailable
         }
-        // evaluatePolicy delivers its result on a private queue, so blocking here
-        // is safe: callers run this off the main thread.
-        let semaphore = DispatchSemaphore(value: 0)
-        var granted = false
-        context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { success, _ in
-            granted = success
-            semaphore.signal()
+        // Give the unauthenticated context to the Keychain. Because the item
+        // owns a user-presence access control, SecItemCopyMatching performs the
+        // one required authentication on this context. Calling evaluatePolicy
+        // first would create a redundant system challenge before the Keychain
+        // evaluates its own ACL.
+        context.localizedReason = reason
+        let passphrase = try load(context: context, serviceName: serviceName, accountName: accountName)
+        // Older builds stored only the protected item. A successful interactive
+        // read migrates them to the prompt-free presence marker.
+        if passphrase != nil {
+            try? saveMarker(serviceName: serviceName, accountName: accountName)
         }
-        semaphore.wait()
-        guard granted else { throw StoreError.authenticationFailed }
-        return try load(context: context, serviceName: serviceName, accountName: accountName)
+        return passphrase
         #else
         return try load(serviceName: serviceName, accountName: accountName)
         #endif
@@ -167,15 +187,21 @@ public enum VaultPassphraseStore {
     /// enforced by the Keychain. Used by self-tests to prove retrieval is gated
     /// rather than readable via a plain `SecItemCopyMatching`.
     public static func requiresAuthenticationToRead(serviceName: String = service, accountName: String = account) -> Bool {
+        // First prove the non-secret presence marker exists. The following data
+        // query suppresses UI and verifies the passphrase itself stays gated.
+        guard isStored(serviceName: serviceName, accountName: accountName) else { return false }
         var query = baseQuery(serviceName: serviceName, accountName: accountName)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         query[kSecUseDataProtectionKeychain as String] = true
         query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUISkip
         let status = SecItemCopyMatching(query as CFDictionary, nil)
-        // With UI suppressed, a gated item reports interactionNotAllowed. An
-        // unprotected item would return the data (errSecSuccess) — the old bug.
+        // Depending on the macOS release, a gated item with UI suppressed is
+        // either interaction-not-allowed, authentication-failed, or filtered
+        // out as item-not-found. An unprotected item returns errSecSuccess.
         return status == errSecInteractionNotAllowed
+            || status == errSecAuthFailed
+            || status == errSecItemNotFound
     }
 
     /// Removes the stored passphrase from both the data-protection Keychain and
@@ -193,6 +219,9 @@ public enum VaultPassphraseStore {
         legacy[kSecUseDataProtectionKeychain as String] = false
         let legacyStatus = SecItemDelete(legacy as CFDictionary)
 
-        return ok(protectedStatus) && ok(legacyStatus)
+        let markerStatus = SecItemDelete(
+            markerQuery(serviceName: serviceName, accountName: accountName) as CFDictionary)
+
+        return ok(protectedStatus) && ok(legacyStatus) && ok(markerStatus)
     }
 }

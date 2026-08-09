@@ -23,26 +23,28 @@ struct ContentView: View {
     /// Off for `RenderHarness`: ImageRenderer can't render ScrollViews, so the
     /// sections lay out at their natural height instead.
     private let scrollsContent: Bool
+    private let showsHeader: Bool
 
-    init(initialTab: KeygateTab = .keys, scrollsContent: Bool = true) {
+    init(
+        initialTab: KeygateTab = .keys,
+        scrollsContent: Bool = true,
+        showsHeader: Bool = true
+    ) {
         _tab = State(initialValue: initialTab)
         self.scrollsContent = scrollsContent
+        self.showsHeader = showsHeader
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.sectionSpacing) {
-            AppHeader(
-                title: "Keygate",
-                subtitle: "SSH keys with app, destination, and Touch ID policy",
-                systemImage: "key.horizontal.fill"
-            ) {
-                Button {
-                    controller.refresh()
-                    controller.checkCloudStatus()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
+            if showsHeader {
+                AppHeader(
+                    title: "Keygate",
+                    subtitle: "SSH keys with app, destination, and Touch ID policy",
+                    systemImage: "key.horizontal.fill"
+                ) {
+                    refreshButton
                 }
-                .help("Refresh")
             }
 
             statusBand
@@ -99,7 +101,9 @@ struct ContentView: View {
                     controller.unlockVault(passphrase: passphrase, saveToKeychain: save)
                 },
                 onTouchID: { completion in
-                    controller.tryBiometricUnlockIfAvailable(completion: completion)
+                    controller.tryBiometricUnlockIfAvailable(
+                        automatically: true,
+                        completion: completion)
                 }
             )
         }
@@ -157,6 +161,9 @@ struct ContentView: View {
                 controller.toggleAgent()
             }
             .buttonStyle(.borderedProminent)
+            if !showsHeader {
+                refreshButton
+            }
         }
         .padding(12)
         .background(Palette.surface.opacity(0.06), in: RoundedRectangle(cornerRadius: Theme.cardRadius))
@@ -164,5 +171,15 @@ struct ContentView: View {
             RoundedRectangle(cornerRadius: Theme.cardRadius)
                 .strokeBorder(Palette.border.opacity(0.6), lineWidth: 1)
         )
+    }
+
+    private var refreshButton: some View {
+        Button {
+            controller.refresh()
+            controller.checkCloudStatus()
+        } label: {
+            Image(systemName: "arrow.clockwise")
+        }
+        .help("Refresh")
     }
 }

@@ -150,6 +150,16 @@ keygate diagnose
   or a biometric access control is unavailable (some self-signed/ad-hoc builds),
   the passphrase is not persisted and you retype it each session. Turn the option
   off to delete the stored passphrase.
+  If a host cannot persist the protected item, Keygate keeps the vault unlocked
+  for that session but now surfaces the Keychain failure instead of clearing it
+  during the subsequent state refresh.
+  Keygate records availability in a separate non-secret Keychain marker. UI
+  refreshes query only that unprotected marker, because even an attributes-only
+  lookup of the protected item can invoke its user-presence ACL repeatedly.
+  Reading the passphrase is a single-flight operation: the Keychain performs
+  the sole Touch ID/device-owner challenge, and overlapping SwiftUI requests
+  share that result. Existing protected items create the marker after their
+  next successful interactive unlock.
 - Signing decisions of `requireUserPresence`, `askEveryTime`, and (on first use
   per window) `allowForDuration` prompt for Touch ID/password through
   LocalAuthentication before the key file is read. Because this gate is in the
