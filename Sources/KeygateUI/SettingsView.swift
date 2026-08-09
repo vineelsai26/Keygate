@@ -50,8 +50,8 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Toggle("Unlock with Touch ID", isOn: $settings.unlockWithTouchID)
-            Text("Saves the vault passphrase in your login Keychain. Unlock prompts for Touch ID (or your Mac password) instead of retyping the passphrase. Turning this off removes the saved passphrase.")
+            Toggle("Allow Touch ID unlock", isOn: $settings.unlockWithTouchID)
+            Text("When enabled, a passphrase unlock can save the passphrase in your login Keychain for later Touch ID (or Mac password) prompts. Turning this off removes any saved passphrase.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
